@@ -1,5 +1,43 @@
 services:
-  # Base du service Dresseurs
+  # --- Microservice 1 : Dresseurs (Django + PostgreSQL) ---
+  dresseurs:
+    build: ./dresseurs
+    ports:
+      - "8001:8001"   # debug, retiré quand la gateway sera là
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: dresseurs
+      POSTGRES_USER: poke
+      POSTGRES_PASSWORD: poke
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-change-me}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- Microservice 2 : Équipes (Django + MongoDB) ---
+  equipes:
+    build: ./equipes
+    ports:
+      - "8002:8002"   # debug, retiré quand la gateway sera là
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DB: equipes
+      POKEDEX_URL: http://pokedex:8000
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-change-me}
+    depends_on:
+      - mongo
+      - pokedex
+
+  # --- Microservice 3 : Pokédex (sans état) ---
+  pokedex:
+    build: ./pokedex
+    ports:
+      - "8000:8000"   # debug, retiré quand la gateway sera là
+    environment:
+      POKEAPI_URL: https://pokeapi.co/api/v2
+
+  # --- Base du service Dresseurs ---
   postgres:
     image: postgres:16-alpine
     environment:
@@ -7,7 +45,7 @@ services:
       POSTGRES_PASSWORD: poke
       POSTGRES_DB: dresseurs
     ports:
-      - "5432:5432"   # exposé pour le debug en local, retiré à la fin
+      - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -15,11 +53,11 @@ services:
       interval: 3s
       retries: 10
 
-  # Base du service Équipes
+  # --- Base du service Équipes ---
   mongo:
     image: mongo:7
     ports:
-      - "27017:27017" # exposé pour le debug en local, retiré à la fin
+      - "27017:27017"
     volumes:
       - mongo_data:/data/db
 
