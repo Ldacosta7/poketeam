@@ -1,0 +1,28 @@
+services:
+  # Base du service Dresseurs
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: poke
+      POSTGRES_PASSWORD: poke
+      POSTGRES_DB: dresseurs
+    ports:
+      - "5432:5432"   # exposé pour le debug en local, retiré à la fin
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poke -d dresseurs"]
+      interval: 3s
+      retries: 10
+
+  # Base du service Équipes
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017" # exposé pour le debug en local, retiré à la fin
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  pg_data:
+  mongo_data:
