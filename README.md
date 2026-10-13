@@ -34,9 +34,10 @@ Docker interne.
 ## Fonctionnalités
 
 - **Comptes** : inscription, connexion (JWT), profil avec avatar.
-- **Création d'équipes** : 6 Pokémon parmi les 9 générations, les **Méga-Évolutions** et les
+- **Création d'équipes** : 1 à 6 Pokémon **capturés en mode Capture**, parmi les 9 générations, les **Méga-Évolutions** et les
   **formes alternatives** (Giratina-Origine, Motisma, formes régionales, Arceus par type…).
-  Filtre par type toutes générations confondues, recherche par nom.
+  Filtre par type toutes générations confondues, recherche par nom. Les Pokémon pas encore
+  capturés apparaissent en silhouette.
 - **Analyse en direct** pendant la création : grille des 18 types (faiblesses non couvertes,
   résistances), suggestions de types à ajouter.
 - **Règles officielles** vérifiées côté serveur : un seul exemplaire par espèce
@@ -50,6 +51,11 @@ Docker interne.
   hasard. Gagner les 3 permet de capturer le **premier stade** de la ligne d'un Pokémon battu.
   Les évolutions se gagnent au combat : **10 victoires** pour la 1re, **30** pour la 2e, choix de
   la branche pour Évoli et consorts, **50 victoires** avec la forme finale pour ses Méga.
+  L'équipe est composée au lancement de chaque run et reste figée jusqu'à la capture ou la
+  défaite ; la progression vers l'évolution de chaque membre s'affiche pendant la run.
+- **Pokédex du dresseur** : Pokémon capturés sur 1 025, par génération, et Méga-Évolutions.
+  Les Pokémon débloqués sont les seuls utilisables partout : une équipe créée avant ce contrôle
+  et contenant un Pokémon non capturé est marquée verrouillée et ne peut plus combattre.
 
 ## Lancer le projet
 
@@ -115,8 +121,8 @@ Les routes conservent le contrat du monolithe d'origine (`/auth/login`, `/users`
 | POST | `/auth/login` | – | Dresseurs | Connexion, renvoie `{ accessToken, user }` |
 | GET | `/auth/profile` | ✔ | Dresseurs | Mon profil |
 | PUT | `/users` | ✔ | Dresseurs | Modifier mon profil |
-| GET | `/teams` | ✔ | Équipes | Mes équipes |
-| POST | `/teams` | ✔ | Équipes | Créer une équipe (`nom`, `poke1`…`poke6`, `isPublic`) |
+| GET | `/teams` | ✔ | Équipes → Pokédex | Mes équipes (avec `locked` : Pokémon non capturés) |
+| POST | `/teams` | ✔ | Équipes → Pokédex | Créer une équipe (`nom`, `poke1`…`poke6`, `isPublic`), Pokémon capturés uniquement |
 | GET · PUT · DELETE | `/teams/:id` | ✔ | Équipes | Lire, modifier, supprimer (propriétaire) |
 | GET | `/teams/public` | ✔ | Équipes | Équipes publiques |
 | POST | `/teams/:a/versus/:b` | ✔ | Équipes → Pokédex | Affrontement |
@@ -126,10 +132,9 @@ Les routes conservent le contrat du monolithe d'origine (`/auth/login`, `/users`
 | GET | `/pokeapi/type/:type/pokemon` | – | Pokédex | Pokémon d'un type, toutes générations |
 | GET | `/pokeapi/poke/:id` | – | Pokédex | Profil (stats, types, faiblesses, résistances) |
 | GET | `/pokeapi/boss` | – | Pokédex | Boss de la semaine |
-| GET | `/capture` | ✔ | Équipes → Pokédex | Ma progression (collection, équipe, paliers, évolutions) |
+| GET | `/capture` | ✔ | Équipes → Pokédex | Ma progression (collection, Pokédex, paliers, évolutions) |
 | POST | `/capture/start` | ✔ | Équipes | Choisir son starter |
-| PUT | `/capture/team` | ✔ | Équipes | Équipe de capture (Pokémon débloqués uniquement) |
-| POST · DELETE | `/capture/run` | ✔ | Équipes → Pokédex | Lancer ou abandonner une run dans un palier |
+| POST · DELETE | `/capture/run` | ✔ | Équipes → Pokédex | Lancer une run (`tier`, `pokemonIds` : équipe de la run) ou l'abandonner |
 | POST | `/capture/run/fight` | ✔ | Équipes → Pokédex | Combattre un des adversaires proposés |
 | POST | `/capture/run/reward` | ✔ | Équipes | Capturer un Pokémon battu (son premier stade) |
 | POST | `/capture/evolution` | ✔ | Équipes → Pokédex | Choisir une branche d'évolution |
@@ -140,17 +145,17 @@ en développement, exposer temporairement le port 8000 du service `pokedex`.
 
 ## Tests
 
-**72 tests automatisés** répartis dans les 4 composants backend.
+**77 tests automatisés** répartis dans les 4 composants backend.
 
 ```bash
-# Pokédex : 38 tests (types, formule, boss, mode Capture, façade PokéAPI simulée)
+# Pokédex : 39 tests (types, formule, boss, mode Capture, façade PokéAPI simulée)
 docker run --rm -v "$PWD/pokedex":/app -w /app python:3.12-slim \
   sh -c "pip install -q -r requirements.txt pytest && python -m pytest -v"
 
 # Dresseurs : 7 tests, contre la vraie base PostgreSQL
 docker compose run --rm dresseurs python manage.py test
 
-# Équipes : 19 tests, contre la vraie base MongoDB (Pokédex simulé)
+# Équipes : 23 tests, contre la vraie base MongoDB (Pokédex simulé)
 docker compose run --rm equipes python manage.py test
 
 # Gateway : 8 tests (JWT, usurpation d'identité, routage, CORS, service arrêté)

@@ -132,7 +132,7 @@ sequenceDiagram
     participant P as Pokédex
     participant M as MongoDB
 
-    J->>F: choisit 6 Pokémon
+    J->>F: choisit 1 à 6 Pokémon parmi ceux qu'il a capturés
     F->>G: POST /pokeapi/teams/analyze (à chaque ajout)
     G->>P: /teams/analyze
     P-->>F: grille des 18 types + suggestions
@@ -140,10 +140,11 @@ sequenceDiagram
     F->>G: POST /teams + Bearer JWT
     G->>G: vérifie le JWT, pose X-User-Id
     G->>E: POST /teams
-    E->>P: POST /teams/analyze (ids)
+    E->>M: Pokémon débloqués du dresseur (captures)
+    E->>P: POST /capture/analyze (ids + débloqués)
     P->>P: profils (cache ou PokéAPI) + summary
-    P-->>E: membres + summary
-    E->>E: règles : 1 à 6 Pokémon, Species Clause, 1 Méga max
+    P-->>E: membres + summary + Pokémon non débloqués
+    E->>E: règles : capturés uniquement (403), 1 à 6 Pokémon, Species Clause, 1 Méga max
     E->>M: insert (instantanés + summary)
     E-->>F: 201 équipe créée
 ```
@@ -198,10 +199,8 @@ sequenceDiagram
     participant M as MongoDB
     participant P as Pokédex
     F->>E: POST /capture/run/fight {wildId} (via la gateway)
-    E->>M: progression du dresseur (run en cours, collection, équipe)
+    E->>M: progression du dresseur (run en cours avec son équipe figée)
     E->>E: wildId fait-il partie des 3 adversaires proposés ?
-    E->>P: POST /capture/analyze (équipe + Pokémon débloqués)
-    P-->>E: summary + Pokémon non débloqués
     E->>P: POST /capture/fight (summary, sauvage, taille de l'équipe)
     P-->>E: résultat (sauvage adapté à la taille de l'équipe)
     E->>M: si victoire : $inc victoires de chaque membre, manche suivante<br/>(conditionné au n° de manche : pas de double comptage)
@@ -210,6 +209,19 @@ sequenceDiagram
     E->>M: $addToSet des évolutions débloquées
     E-->>F: combat à mettre en scène + nouvelle progression
 ```
+
+L'équipe de la run est composée au lancement (`POST /capture/run {tier, pokemonIds}`) :
+Équipes la fait analyser par le Pokédex (`/capture/analyze`, qui refuse les Pokémon non
+débloqués), puis stocke ses instantanés et son summary dans la run. Elle reste figée jusqu'à la
+capture ou la défaite, et chaque combat n'a plus besoin de la réanalyser.
+
+### Les Pokémon capturés, droit d'utilisation partout
+
+La même vérification (`/capture/analyze`, cf. création d'équipe) protège la création et la
+modification d'équipe. Pour le versus et le boss, Équipes appelle `POST /capture/locked` avec
+chaque équipe et les Pokémon débloqués de **son** dresseur : une équipe créée avant ce contrôle
+et contenant un Pokémon non capturé est refusée (409). Les listes d'équipes portent le même
+calcul dans un champ `locked` ([ADR 0016](adr/0016-pokemon-debloques-droit-utilisation.md)).
 
 ## Modèles de données
 
@@ -269,9 +281,10 @@ fait que stocker et appliquer, par des opérations atomiques.
   "starter": 4,
   "unlocked": [4, 5, 174, 746],
   "victories": { "charmander": 12, "charmeleon": 3 },
-  "team": [5, 746],
   "run": {
     "tier": 3, "round": 2, "reward": false,
+    "team": [{ "pokemonId": 5, "name": "charmeleon", "baseSpecies": "charmeleon", "...": "instantané" }],
+    "summary": { "statTotal": 405, "weak": {}, "resist": {}, "offensiveTypes": ["fire"] },
     "candidates": [{ "id": 191, "name": "sunkern", "statTotal": 180, "firstStage": { "id": 191 } }],
     "defeated":   [{ "id": 298, "name": "azurill", "firstStage": { "id": 298 } }]
   },
