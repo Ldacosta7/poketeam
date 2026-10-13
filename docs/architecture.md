@@ -1,0 +1,255 @@
+# Architecture de PokéTeam
+
+Ce document décrit l'architecture selon le modèle **C4** (contexte, conteneurs, composants),
+puis les flux principaux et les modèles de données. Les choix sont justifiés dans les
+[ADR](adr/README.md).
+
+---
+
+## Point de départ : le monolithe
+
+Le projet est la **migration** d'une application existante, *Pocket'APP* :
+
+```mermaid
+flowchart LR
+    F["Front Angular"] --> M["Monolithe NestJS :3000<br/>modules auth · users · teams · pokeapi"]
+    M --> DB[("MySQL (XAMPP)")]
+    M --> API["PokéAPI"]
+```
+
+Problèmes relevés dans le monolithe, corrigés par la migration :
+
+| Problème | Correction |
+|---|---|
+| Mots de passe stockés en clair | Hachage PBKDF2 dans Dresseurs |
+| `GET /users/:mail` public, renvoyait le mot de passe | Route supprimée |
+| `PUT /users`, `DELETE /users/:id`, `DELETE /teams/:id` sans contrôle d'accès | Identité via JWT, vérification du propriétaire |
+| Secret JWT en dur dans le code | Variable d'environnement (`.env`) |
+| ~150 appels successifs à PokéAPI pour lister une génération | 19 appels parallèles mis en cache (1,37 s → 0,025 s au 2ᵉ appel) |
+| Boucle qui sautait des Pokémon dans la liste d'une génération | Réécrite dans le Pokédex, testée |
+
+---
+
+## Niveau 1 — Contexte
+
+```mermaid
+flowchart TB
+    J(["👤 Dresseur<br/>joueur"])
+    S["<b>PokéTeam</b><br/>Créer des équipes, les analyser,<br/>les faire s'affronter"]
+    P["<b>PokéAPI</b><br/>pokeapi.co<br/>Données Pokémon publiques"]
+    J -->|"utilise via son navigateur"| S
+    S -->|"lit les Pokémon, types, stats<br/>(HTTPS, JSON)"| P
+
+    classDef sys fill:#1168bd,stroke:#0b4884,color:#fff
+    classDef ext fill:#999,stroke:#6b6b6b,color:#fff
+    classDef person fill:#08427b,stroke:#052e56,color:#fff
+    class S sys
+    class P ext
+    class J person
+```
+
+---
+
+## Niveau 2 — Conteneurs
+
+```mermaid
+flowchart TB
+    J(["👤 Dresseur"])
+
+    subgraph SYS["PokéTeam — réseau Docker Compose"]
+        F["<b>Front</b><br/>Angular 19, Bootstrap 5<br/><i>pages, arène animée</i>"]
+        G["<b>API Gateway</b><br/>Node 22, Express<br/><i>routage, vérification JWT, CORS</i>"]
+        D["<b>Dresseurs</b><br/>Python, Django + DRF<br/><i>comptes, connexion, émission des JWT</i>"]
+        E["<b>Équipes</b><br/>Python, Django + DRF + pymongo<br/><i>équipes, droits d'accès, versus, boss</i>"]
+        P["<b>Pokédex</b><br/>Python, FastAPI — sans état<br/><i>façade PokéAPI, règles des types, calculs</i>"]
+        PG[("<b>PostgreSQL 16</b><br/>table des dresseurs")]
+        MG[("<b>MongoDB 7</b><br/>collection teams")]
+    end
+
+    API["<b>PokéAPI</b><br/>externe"]
+
+    J -->|"HTTP :4200"| F
+    F -->|"REST JSON + Bearer JWT<br/>:3000 — seul port exposé"| G
+    G -->|"/auth, /users"| D
+    G -->|"/teams"| E
+    G -->|"/pokeapi/*"| P
+    E -->|"REST interne<br/>/teams/analyze, /teams/compare, /boss/fight"| P
+    D --> PG
+    E --> MG
+    P -->|"HTTPS + cache mémoire"| API
+
+    classDef c fill:#438dd5,stroke:#2e6295,color:#fff
+    classDef db fill:#438dd5,stroke:#2e6295,color:#fff
+    classDef ext fill:#999,stroke:#6b6b6b,color:#fff
+    class F,G,D,E,P c
+    class PG,MG db
+    class API ext
+```
+
+| Conteneur | Responsabilité | Ne fait **pas** |
+|---|---|---|
+| Gateway | Point d'entrée unique, **authentification** (qui es-tu ?), CORS | Aucune règle métier |
+| Dresseurs | Identité : comptes, mots de passe hachés, émission des JWT | Vérifier les JWT (c'est la gateway) |
+| Équipes | Ce que possède le dresseur : équipes, **autorisation** (est-ce ton équipe ?), persistance | Aucune règle de type Pokémon |
+| Pokédex | Toute la connaissance Pokémon : données, types, faiblesses, analyse, formule de combat, boss | Aucun stockage, aucune notion d'utilisateur |
+
+---
+
+## Niveau 3 — Composants du Pokédex
+
+Le service central du domaine est découpé en trois couches.
+
+```mermaid
+flowchart TB
+    subgraph PK["Pokédex (FastAPI)"]
+        M["<b>main.py</b> — interface HTTP<br/>routes, validation Pydantic, codes d'erreur"]
+        A["<b>pokeapi.py</b> — Anti-Corruption Layer<br/>traduit PokéAPI en profils simples,<br/>index des Pokémon, formes, cache mémoire"]
+        L["<b>logic.py</b> — domaine pur<br/>multiplicateurs de types, summary, analyse,<br/>suggestions, formule d'affrontement, boss"]
+    end
+    M --> A
+    M --> L
+    A --> L
+    A -->|"seul point réseau : _fetch()"| API["PokéAPI"]
+```
+
+- `logic.py` n'a **aucune dépendance réseau** : il est testé avec des données en dur.
+- `pokeapi.py` est le **seul** fichier qui connaît le format de PokéAPI ; ses tests remplacent
+  `_fetch()` par une fausse PokéAPI.
+
+---
+
+## Flux principaux
+
+### Création d'une équipe
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor J as Dresseur
+    participant F as Front
+    participant G as Gateway
+    participant E as Équipes
+    participant P as Pokédex
+    participant M as MongoDB
+
+    J->>F: choisit 6 Pokémon
+    F->>G: POST /pokeapi/teams/analyze (à chaque ajout)
+    G->>P: /teams/analyze
+    P-->>F: grille des 18 types + suggestions
+    J->>F: Valider
+    F->>G: POST /teams + Bearer JWT
+    G->>G: vérifie le JWT, pose X-User-Id
+    G->>E: POST /teams
+    E->>P: POST /teams/analyze (ids)
+    P->>P: profils (cache ou PokéAPI) + summary
+    P-->>E: membres + summary
+    E->>E: règles : 1 à 6 Pokémon, Species Clause, 1 Méga max
+    E->>M: insert (instantanés + summary)
+    E-->>F: 201 équipe créée
+```
+
+### Affrontement (versus)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant F as Front
+    participant G as Gateway
+    participant E as Équipes
+    participant M as MongoDB
+    participant P as Pokédex
+
+    F->>G: POST /teams/A/versus/B + JWT
+    G->>E: X-User-Id
+    E->>M: charge A et B
+    E->>E: A et B sont-elles à moi ou publiques ?
+    E->>P: POST /teams/compare (deux summaries)
+    P->>P: score défensif, avantage, multiplicateur borné
+    P-->>E: vainqueur + détail du calcul
+    E-->>F: résultat + membres (sprites) pour l'animation
+    Note over F: Mise en scène : intro, attaques par type, K.O.<br/>Le résultat n'est pas stocké.
+```
+
+### Boss de la semaine
+
+```mermaid
+sequenceDiagram
+    participant F as Front
+    participant E as Équipes
+    participant P as Pokédex
+    F->>P: GET /pokeapi/boss (via la gateway)
+    P->>P: semaine ISO → BOSS_CATALOG[(année×100 + semaine) mod 8]
+    P-->>F: boss : artwork, types, stats × 5, fin de semaine
+    F->>E: POST /teams/:id/boss (via la gateway)
+    E->>P: POST /boss/fight (summary de l'équipe)
+    P-->>E: même formule que le versus
+    E-->>F: résultat
+```
+
+---
+
+## Modèles de données
+
+### PostgreSQL — Dresseurs
+
+```mermaid
+erDiagram
+    ACCOUNTS_DRESSEUR {
+        bigint id PK
+        varchar mail UK
+        varchar nom
+        varchar prenom
+        varchar photo_profil
+        varchar password "PBKDF2, jamais en clair"
+        timestamptz created_at
+    }
+```
+
+### MongoDB — Équipes (collection `teams`)
+
+Une équipe est un **agrégat** lu et écrit d'un seul bloc ; elle embarque un instantané de
+chaque Pokémon et son summary pré-calculé.
+
+```json
+{
+  "_id": "6710a3…",
+  "userId": "1",
+  "nom": "Team Eau",
+  "isPublic": true,
+  "members": [
+    {
+      "pokemonId": 9, "name": "blastoise", "isMega": false, "isForm": false,
+      "sprite": "https://…/9.png", "types": ["water"],
+      "stats": { "hp": 79, "attack": 83, "defense": 100, "spAtk": 85, "spDef": 105, "speed": 78 },
+      "statTotal": 530,
+      "weaknesses": ["electric", "grass"],
+      "resistances": ["fire", "water", "ice", "steel"]
+    }
+  ],
+  "summary": {
+    "statTotal": 1605,
+    "weak": { "electric": 3, "grass": 2 },
+    "resist": { "fire": 2, "water": 3, "ice": 2, "steel": 2 },
+    "offensiveTypes": ["water", "ice", "flying"]
+  }
+}
+```
+
+Il n'y a plus de clé étrangère entre dresseurs et équipes : `userId` est une simple valeur
+fournie par la gateway ([ADR 0004](adr/0004-persistance-polyglotte.md)).
+
+---
+
+## Déploiement (Docker Compose)
+
+| Conteneur | Image | Port exposé à l'hôte | Dépend de |
+|---|---|---|---|
+| gateway | `node:22-alpine` | **3000** | dresseurs, equipes, pokedex |
+| dresseurs | `python:3.12-slim` + gunicorn | – (8001 interne) | postgres (healthcheck) |
+| equipes | `python:3.12-slim` + gunicorn | – (8002 interne) | mongo, pokedex |
+| pokedex | `python:3.12-slim` + uvicorn | – (8000 interne) | PokéAPI (internet) |
+| postgres | `postgres:16-alpine` | – | volume `pg_data` |
+| mongo | `mongo:7` | – | volume `mongo_data` |
+
+Les secrets (`JWT_SECRET`, `DJANGO_SECRET_KEY`) viennent du fichier `.env`. `JWT_SECRET` est le
+seul secret partagé : Dresseurs **signe** les tokens, la gateway les **vérifie**.

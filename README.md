@@ -1,0 +1,177 @@
+# PokéTeam — Pocket'APP en microservices
+
+Application de création d'équipes Pokémon, avec analyse des faiblesses, affrontements animés
+entre équipes et un boss de la semaine. Projet de cours : **migration d'un monolithe NestJS
+vers une architecture microservices**.
+
+| Contrainte du sujet | Réalisation |
+|---|---|
+| 1 front | Angular 19 + Bootstrap 5 (le front existant, conservé et corrigé) |
+| 3 microservices | **Dresseurs** (Django), **Équipes** (Django), **Pokédex** (FastAPI) |
+| 2 bases de données | **PostgreSQL** (Dresseurs), **MongoDB** (Équipes) |
+| + | Une **API Gateway** (Node/Express), composant d'infrastructure |
+
+```mermaid
+flowchart LR
+    F["Front Angular<br/>:4200"] -->|"REST + JWT"| G["API Gateway<br/>Node · :3000"]
+    G --> D["Dresseurs<br/>Django"]
+    G --> E["Équipes<br/>Django"]
+    G --> P["Pokédex<br/>FastAPI · sans état"]
+    E -->|"analyse, combats"| P
+    D --> PG[("PostgreSQL")]
+    E --> MG[("MongoDB")]
+    P --> API["PokéAPI<br/>(externe)"]
+```
+
+Seule la gateway est exposée. Les services et les bases ne sont joignables que sur le réseau
+Docker interne.
+
+📐 Architecture détaillée (C4, flux, données) : [`docs/architecture.md`](docs/architecture.md)
+🧭 Décisions d'architecture (ADR) : [`docs/adr/`](docs/adr/README.md)
+
+---
+
+## Fonctionnalités
+
+- **Comptes** : inscription, connexion (JWT), profil avec avatar.
+- **Création d'équipes** : 6 Pokémon parmi les 9 générations, les **Méga-Évolutions** et les
+  **formes alternatives** (Giratina-Origine, Motisma, formes régionales, Arceus par type…).
+  Filtre par type toutes générations confondues, recherche par nom.
+- **Analyse en direct** pendant la création : grille des 18 types (faiblesses non couvertes,
+  résistances), suggestions de types à ajouter.
+- **Règles officielles** vérifiées côté serveur : un seul exemplaire par espèce
+  (*Species Clause*), une seule Méga-Évolution par équipe.
+- **Versus** : affrontement entre deux équipes (les tiennes ou les équipes publiques des autres
+  dresseurs), avec une mise en scène animée et le détail du calcul.
+- **Boss de la semaine** : un Pokémon géant (stats × 5) à affronter, qui change chaque lundi.
+
+## Lancer le projet
+
+### Prérequis
+
+- **Docker** avec Docker Compose v2 (Docker Desktop, ou [Colima](https://github.com/abiosoft/colima)
+  sur Mac : `colima start --cpu 2 --memory 4`)
+- **Node.js 20+** pour le front
+- Un accès internet (le Pokédex interroge PokéAPI)
+
+### 1. Créer le fichier `.env` (secrets, jamais commité)
+
+```bash
+printf "JWT_SECRET=%s\nDJANGO_SECRET_KEY=%s\n" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
+```
+
+### 2. Démarrer le backend
+
+```bash
+docker compose up -d --build
+docker compose ps        # 6 conteneurs « Up », seule la gateway expose le port 3000
+```
+
+### 3. Démarrer le front
+
+```bash
+cd front
+npm install
+npx ng serve
+```
+
+Ouvrir **http://localhost:4200**, créer un compte depuis la page d'accueil puis se connecter.
+
+> Le premier chargement d'une génération prend quelques secondes (le Pokédex remplit son
+> cache depuis PokéAPI), les suivants sont instantanés.
+
+## Structure du dépôt
+
+```
+poketeam/
+├── docker-compose.yml     # gateway, 3 services, 2 bases
+├── .env.example           # variables à définir dans .env
+├── front/                 # Angular 19 (front existant du monolithe)
+├── gateway/               # Node/Express : routage, JWT, CORS
+├── dresseurs/             # Django + DRF + PostgreSQL : comptes, authentification
+├── equipes/               # Django + DRF + pymongo + MongoDB : équipes, versus, boss
+├── pokedex/               # FastAPI, sans état : façade PokéAPI, règles et calculs Pokémon
+└── docs/
+    ├── architecture.md    # schémas C4, flux, modèles de données
+    └── adr/               # Architecture Decision Records
+```
+
+## API (via la gateway, `http://localhost:3000`)
+
+Les routes conservent le contrat du monolithe d'origine (`/auth/login`, `/users`, `/teams`,
+`/pokeapi/...`) : le front n'a pas eu à changer ses URL (cf. [ADR 0001](docs/adr/0001-migration-strangler-fig.md)).
+
+| Méthode | Route | Auth | Service | Rôle |
+|---|---|:-:|---|---|
+| POST | `/users` | – | Dresseurs | Inscription |
+| POST | `/auth/login` | – | Dresseurs | Connexion, renvoie `{ accessToken, user }` |
+| GET | `/auth/profile` | ✔ | Dresseurs | Mon profil |
+| PUT | `/users` | ✔ | Dresseurs | Modifier mon profil |
+| GET | `/teams` | ✔ | Équipes | Mes équipes |
+| POST | `/teams` | ✔ | Équipes | Créer une équipe (`nom`, `poke1`…`poke6`, `isPublic`) |
+| GET · PUT · DELETE | `/teams/:id` | ✔ | Équipes | Lire, modifier, supprimer (propriétaire) |
+| GET | `/teams/public` | ✔ | Équipes | Équipes publiques |
+| POST | `/teams/:a/versus/:b` | ✔ | Équipes → Pokédex | Affrontement |
+| POST | `/teams/:id/boss` | ✔ | Équipes → Pokédex | Combat contre le boss de la semaine |
+| GET | `/pokeapi/generation/:n` | – | Pokédex | Pokémon d'une génération (1 à 9) et leurs formes |
+| GET | `/pokeapi/megas` | – | Pokédex | Méga-Évolutions |
+| GET | `/pokeapi/type/:type/pokemon` | – | Pokédex | Pokémon d'un type, toutes générations |
+| GET | `/pokeapi/poke/:id` | – | Pokédex | Profil (stats, types, faiblesses, résistances) |
+| GET | `/pokeapi/boss` | – | Pokédex | Boss de la semaine |
+| POST | `/pokeapi/teams/analyze` | ✔ | Pokédex | Analyse d'une équipe en cours de création |
+
+La documentation interactive du Pokédex (Swagger) est générée par FastAPI ; pour la consulter
+en développement, exposer temporairement le port 8000 du service `pokedex`.
+
+## Tests
+
+**53 tests automatisés** répartis dans les 4 composants backend.
+
+```bash
+# Pokédex : 26 tests (logique des types, formule, boss, façade PokéAPI simulée)
+docker run --rm -v "$PWD/pokedex":/app -w /app python:3.12-slim \
+  sh -c "pip install -q -r requirements.txt pytest && python -m pytest -v"
+
+# Dresseurs : 7 tests, contre la vraie base PostgreSQL
+docker compose run --rm dresseurs python manage.py test
+
+# Équipes : 13 tests, contre la vraie base MongoDB (Pokédex simulé)
+docker compose run --rm equipes python manage.py test
+
+# Gateway : 7 tests (JWT, usurpation d'identité, routage, CORS, service arrêté)
+docker run --rm -v "$PWD/gateway":/app -w /app node:22-alpine sh -c "npm ci --silent && npm test"
+```
+
+## La formule d'affrontement
+
+1. Chaque Pokémon ajoute **+1** dans chacune de ses faiblesses (multiplicateur > 1) et de ses
+   résistances (< 1, immunités comprises). Les doubles types se **multiplient** :
+   Eau/Sol est immunisé à Électrik (×2 × ×0).
+2. **Score défensif** d'une équipe : somme, sur les types présents en face, de
+   `résistances − faiblesses`.
+3. **Avantage de type** = score défensif de l'équipe − score défensif de l'adversaire.
+4. **Score final** = total des stats de base × `clamp(1 + 0,1 × avantage, 0,5, 1,5)`.
+
+Détails et justification : [ADR 0009](docs/adr/0009-formule-affrontement.md).
+
+## Sécurité
+
+- Mots de passe **hachés** (PBKDF2, 870 000 itérations) ; le monolithe les stockait en clair.
+- **JWT vérifié par la gateway**, qui transmet l'identité aux services (`X-User-Id`) après avoir
+  supprimé tout en-tête du même nom envoyé par le client.
+- Services et bases **non exposés** : seule la gateway est joignable.
+- **Autorisation dans les services** : on ne peut lire, modifier, supprimer ou envoyer au
+  combat que ses propres équipes (ou les équipes publiques pour le versus).
+- Secrets dans `.env`, hors du dépôt.
+
+## Limites connues
+
+- Le Pokédex dépend de PokéAPI : si elle est indisponible et que le cache est vide, on ne peut
+  plus créer d'équipe (les équipes existantes restent lisibles grâce aux instantanés).
+- Le cache du Pokédex est en mémoire : il est vidé à chaque redémarrage.
+- Les Méga-Évolutions et certaines formes (Darumacho Transe…) n'existent en jeu que pendant un
+  combat ; ici on les choisit directement dans l'équipe, par simplification.
+- La fiche détail d'un Pokémon interroge encore PokéAPI directement depuis le front
+  (sprites shiny, attaques).
+- L'équipe en cours de création est conservée pendant la navigation, mais pas après un
+  rechargement complet de la page.
