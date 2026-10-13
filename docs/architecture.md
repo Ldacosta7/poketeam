@@ -188,6 +188,29 @@ sequenceDiagram
 
 ---
 
+### Mode Capture : un combat de run
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant F as Front
+    participant E as Équipes
+    participant M as MongoDB
+    participant P as Pokédex
+    F->>E: POST /capture/run/fight {wildId} (via la gateway)
+    E->>M: progression du dresseur (run en cours, collection, équipe)
+    E->>E: wildId fait-il partie des 3 adversaires proposés ?
+    E->>P: POST /capture/analyze (équipe + Pokémon débloqués)
+    P-->>E: summary + Pokémon non débloqués
+    E->>P: POST /capture/fight (summary, sauvage, taille de l'équipe)
+    P-->>E: résultat (sauvage adapté à la taille de l'équipe)
+    E->>M: si victoire : $inc victoires de chaque membre, manche suivante<br/>(conditionné au n° de manche : pas de double comptage)
+    E->>P: POST /capture/state (collection, victoires)
+    P-->>E: évolutions débloquées, choix en attente, paliers
+    E->>M: $addToSet des évolutions débloquées
+    E-->>F: combat à mettre en scène + nouvelle progression
+```
+
 ## Modèles de données
 
 ### PostgreSQL — Dresseurs
@@ -232,6 +255,27 @@ chaque Pokémon et son summary pré-calculé.
     "resist": { "fire": 2, "water": 3, "ice": 2, "steel": 2 },
     "offensiveTypes": ["water", "ice", "flying"]
   }
+}
+```
+
+### MongoDB — progression du mode Capture (collection `captures`)
+
+Un document par dresseur. Les règles (seuils, rencontres) sont dans le Pokédex ; Équipes ne
+fait que stocker et appliquer, par des opérations atomiques.
+
+```json
+{
+  "userId": "1",
+  "starter": 4,
+  "unlocked": [4, 5, 174, 746],
+  "victories": { "charmander": 12, "charmeleon": 3 },
+  "team": [5, 746],
+  "run": {
+    "tier": 3, "round": 2, "reward": false,
+    "candidates": [{ "id": 191, "name": "sunkern", "statTotal": 180, "firstStage": { "id": 191 } }],
+    "defeated":   [{ "id": 298, "name": "azurill", "firstStage": { "id": 298 } }]
+  },
+  "choices": []
 }
 ```
 

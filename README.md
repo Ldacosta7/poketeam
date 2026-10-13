@@ -44,6 +44,12 @@ Docker interne.
 - **Versus** : affrontement entre deux équipes (les tiennes ou les équipes publiques des autres
   dresseurs), avec une mise en scène animée et le détail du calcul.
 - **Boss de la semaine** : un Pokémon géant (stats × 5) à affronter, qui change chaque lundi.
+- **Mode Capture** : on commence avec un seul starter (parmi les 27 des 9 générations) et on
+  débloque les autres en combattant. Les Pokémon sauvages sont répartis en **paliers de 50 en
+  stats de base** ; une run = 3 combats d'affilée contre des adversaires choisis parmi 3 tirés au
+  hasard. Gagner les 3 permet de capturer le **premier stade** de la ligne d'un Pokémon battu.
+  Les évolutions se gagnent au combat : **10 victoires** pour la 1re, **30** pour la 2e, choix de
+  la branche pour Évoli et consorts, **50 victoires** avec la forme finale pour ses Méga.
 
 ## Lancer le projet
 
@@ -91,6 +97,8 @@ poketeam/
 ├── dresseurs/             # Django + DRF + PostgreSQL : comptes, authentification
 ├── equipes/               # Django + DRF + pymongo + MongoDB : équipes, versus, boss
 ├── pokedex/               # FastAPI, sans état : façade PokéAPI, règles et calculs Pokémon
+│   ├── app/data/capture.json    # référentiel du mode Capture (espèces, évolutions, stats)
+│   └── scripts/                 # génération de ce référentiel depuis les CSV de PokéAPI
 └── docs/
     ├── architecture.md    # schémas C4, flux, modèles de données
     └── adr/               # Architecture Decision Records
@@ -118,6 +126,13 @@ Les routes conservent le contrat du monolithe d'origine (`/auth/login`, `/users`
 | GET | `/pokeapi/type/:type/pokemon` | – | Pokédex | Pokémon d'un type, toutes générations |
 | GET | `/pokeapi/poke/:id` | – | Pokédex | Profil (stats, types, faiblesses, résistances) |
 | GET | `/pokeapi/boss` | – | Pokédex | Boss de la semaine |
+| GET | `/capture` | ✔ | Équipes → Pokédex | Ma progression (collection, équipe, paliers, évolutions) |
+| POST | `/capture/start` | ✔ | Équipes | Choisir son starter |
+| PUT | `/capture/team` | ✔ | Équipes | Équipe de capture (Pokémon débloqués uniquement) |
+| POST · DELETE | `/capture/run` | ✔ | Équipes → Pokédex | Lancer ou abandonner une run dans un palier |
+| POST | `/capture/run/fight` | ✔ | Équipes → Pokédex | Combattre un des adversaires proposés |
+| POST | `/capture/run/reward` | ✔ | Équipes | Capturer un Pokémon battu (son premier stade) |
+| POST | `/capture/evolution` | ✔ | Équipes → Pokédex | Choisir une branche d'évolution |
 | POST | `/pokeapi/teams/analyze` | ✔ | Pokédex | Analyse d'une équipe en cours de création |
 
 La documentation interactive du Pokédex (Swagger) est générée par FastAPI ; pour la consulter
@@ -125,20 +140,20 @@ en développement, exposer temporairement le port 8000 du service `pokedex`.
 
 ## Tests
 
-**53 tests automatisés** répartis dans les 4 composants backend.
+**72 tests automatisés** répartis dans les 4 composants backend.
 
 ```bash
-# Pokédex : 26 tests (logique des types, formule, boss, façade PokéAPI simulée)
+# Pokédex : 38 tests (types, formule, boss, mode Capture, façade PokéAPI simulée)
 docker run --rm -v "$PWD/pokedex":/app -w /app python:3.12-slim \
   sh -c "pip install -q -r requirements.txt pytest && python -m pytest -v"
 
 # Dresseurs : 7 tests, contre la vraie base PostgreSQL
 docker compose run --rm dresseurs python manage.py test
 
-# Équipes : 13 tests, contre la vraie base MongoDB (Pokédex simulé)
+# Équipes : 19 tests, contre la vraie base MongoDB (Pokédex simulé)
 docker compose run --rm equipes python manage.py test
 
-# Gateway : 7 tests (JWT, usurpation d'identité, routage, CORS, service arrêté)
+# Gateway : 8 tests (JWT, usurpation d'identité, routage, CORS, service arrêté)
 docker run --rm -v "$PWD/gateway":/app -w /app node:22-alpine sh -c "npm ci --silent && npm test"
 ```
 

@@ -17,3 +17,5 @@ Chaque décision d'architecture importante est documentée : contexte, décision
 | 0011 | [Boss de la semaine déduit de la date](0011-boss-sans-etat.md) | Acceptée |
 | 0012 | [Règles de composition validées côté serveur](0012-regles-cote-serveur.md) | Acceptée |
 | 0013 | [Secrets et mots de passe](0013-secrets-mots-de-passe.md) | Acceptée |
+| 0014 | [Référentiel statique pour le mode Capture](0014-referentiel-capture-statique.md) | Acceptée |
+| 0015 | [Progression du mode Capture : stockée par Équipes, décidée par le serveur](0015-progression-capture.md) | Acceptée |
